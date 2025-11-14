@@ -290,10 +290,11 @@ private class TraceSaleAggregationBatchTest {
         Test.stopTest();
 
         // Verify query locator returns unlinked records
+        // The batch query doesn't select Trace_Account_Mapping__c, so we verify by count
         List<Trace_Sale__c> records = Database.query(ql.getQuery());
-        for (Trace_Sale__c ts : records) {
-            System.assertEquals(null, ts.Trace_Account_Mapping__c, 'Should only query unlinked records');
-        }
+        Integer expectedUnlinkedCount = [SELECT COUNT() FROM Trace_Sale__c WHERE Trace_Account_Mapping__c = null];
+        System.assertEquals(expectedUnlinkedCount, records.size(), 'Should return all unlinked records');
+        System.assert(records.size() > 0, 'Should have unlinked records from test setup');
     }
 
     @IsTest
