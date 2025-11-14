@@ -172,6 +172,7 @@ public with sharing class AccountLinkerController {
 
     /**
      * Helper method to query aggregates for a specific year
+     * Returns first 2000 groups without ORDER BY to avoid scanning all rows
      * If query fails (e.g., too many rows in year), splits by month
      */
     @TestVisible
@@ -208,7 +209,6 @@ public with sharing class AccountLinkerController {
             query += 'Distributor_Invoice_Date__c >= :yearStart AND Distributor_Invoice_Date__c <= :yearEnd ' +
                 'GROUP BY Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
                 'CALENDAR_YEAR(Distributor_Invoice_Date__c) ' +
-                'ORDER BY SUM(Revenue_Net__c) DESC ' +
                 'LIMIT 2000';
 
             return Database.query(query);
