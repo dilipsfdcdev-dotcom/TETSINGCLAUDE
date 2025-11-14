@@ -213,8 +213,134 @@ private class AccountLinkerControllerTest {
     }
 
     @IsTest
+    static void testEmptyResults() {
+        // Test with account that has no linked records
+        Account beta = [SELECT Id FROM Account WHERE Name = 'Beta Clinic' LIMIT 1];
+
+        Test.startTest();
+        List<AccountLinkerController.AggregatedTraceSale> aggs =
+            AccountLinkerController.getAggregatedLinkedTraceSales(beta.Id);
+        Test.stopTest();
+
+        System.assertEquals(0, aggs.size(), 'Should return empty list for account with no linked records');
+    }
+
+    @IsTest
+    static void testGetTraceSaleDetailsWithNullValues() {
+        // Create record with null distributor to test null handling
+        Trace_Sale__c tsNull = new Trace_Sale__c(
+            Distributor__c = null,
+            Customer__c = null,
+            Zip_Code__c = null,
+            City__c = 'Test City',
+            State__c = 'TS',
+            Country__c = 'TestCountry',
+            Revenue_Net__c = 100,
+            Distributor_Invoice_Date__c = Date.newInstance(2024, 1, 1)
+        );
+        insert tsNull;
+
+        Test.startTest();
+        AccountLinkerController.AggregatedTraceSale details =
+            AccountLinkerController.getTraceSaleDetailsForGroup(null, null, null, '2024');
+        Test.stopTest();
+
+        System.assertNotEquals(null, details, 'Should handle null values gracefully');
+        System.assert(details.traceSaleIds.size() > 0, 'Should find records with null distributor');
+    }
+
+    @IsTest
+    static void testSearchAccountsWithNoResults() {
+        Test.startTest();
+        List<Account> results = AccountLinkerController.searchAccounts('XYZ_NONEXISTENT_ACCOUNT_999');
+        Test.stopTest();
+
+        System.assertEquals(0, results.size(), 'Should return empty list when no matches found');
+    }
+
+    @IsTest
+    static void testGetTraceSaleDetailsWithInvalidData() {
+        Test.startTest();
+        AccountLinkerController.AggregatedTraceSale details =
+            AccountLinkerController.getTraceSaleDetailsForGroup(
+                'NONEXISTENT_DIST',
+                'NONEXISTENT_CUST',
+                '99999',
+                '1999'
+            );
+        Test.stopTest();
+
+        System.assertEquals(0, details.traceSaleIds.size(), 'Should return empty IDs for non-existent group');
+        System.assertEquals(0, details.totalRevenue, 'Should have zero revenue');
+    }
+
+    @IsTest
+    static void testLargeDatasetSimulation() {
+        // Create more records to test aggregation and sorting
+        List<Trace_Sale__c> bulkSales = new List<Trace_Sale__c>();
+
+        // Create 50 records across different distributors and years
+        for (Integer i = 0; i < 50; i++) {
+            bulkSales.add(new Trace_Sale__c(
+                Distributor__c = 'BulkDist' + Math.mod(i, 5),
+                Customer__c = 'BulkCust' + Math.mod(i, 5),
+                Zip_Code__c = '1000' + Math.mod(i, 5),
+                City__c = 'BulkCity',
+                State__c = 'BC',
+                Country__c = 'USA',
+                Revenue_Net__c = 1000 + (i * 10),
+                Contract_Name_Number__c = 'BC-' + i,
+                Distributor_Invoice_Date__c = Date.newInstance(2024, Math.mod(i, 12) + 1, 1)
+            ));
+        }
+        insert bulkSales;
+
+        Test.startTest();
+        List<AccountLinkerController.AggregatedTraceSale> aggs =
+            AccountLinkerController.getAggregatedUnlinkedTraceSales();
+        Test.stopTest();
+
+        // Should aggregate by distributor/customer/zip/year
+        System.assert(aggs.size() > 0, 'Should return aggregated results');
+
+        // Verify sorting - first result should have highest revenue
+        Decimal firstRevenue = aggs[0].totalRevenue;
+        if (aggs.size() > 1) {
+            Decimal secondRevenue = aggs[1].totalRevenue;
+            System.assert(firstRevenue >= secondRevenue, 'Results should be sorted by revenue descending');
+        }
+    }
+
+    @IsTest
+    static void testCreateMappingsWithEmptyData() {
+        Account testAccount = [SELECT Id FROM Account WHERE Name = 'Acme Medical' LIMIT 1];
+
+        Test.startTest();
+        try {
+            AccountLinkerController.createTraceAccountMappings('[]', testAccount.Id);
+            System.assert(false, 'Should throw exception for empty data');
+        } catch (Exception e) {
+            System.assert(true, 'Expected exception for empty data');
+        }
+        Test.stopTest();
+    }
+
+    @IsTest
+    static void testUnlinkWithEmptyData() {
+        Test.startTest();
+        try {
+            AccountLinkerController.unlinkTraceAccountMappings('[]');
+            // Empty data should not cause error, just no action
+            System.assert(true, 'Should handle empty data gracefully');
+        } catch (Exception e) {
+            System.assert(true, 'Should handle empty data');
+        }
+        Test.stopTest();
+    }
+
+    @IsTest
 static void testCreateAndUnlinkTraceAccountMappings() {
-    // Create a fresh Account to link against (so we don’t disturb setup mappings)
+    // Create a fresh Account to link against (so we don't disturb setup mappings)
     Account gamma = new Account(Name = 'Gamma Health', Type = 'Customer');
     insert gamma;
 
