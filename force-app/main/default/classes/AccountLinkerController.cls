@@ -82,6 +82,13 @@ public with sharing class AccountLinkerController {
      */
     @TestVisible
     private static List<AggregateResult> queryAggregatesByYear(Integer year, String mode, String accountId) {
+        // If a year might have >50K rows, go straight to monthly to avoid the error
+        // This is a production-safe approach that handles massive datasets
+        if (year >= Date.today().year() - 2) {
+            // Recent years (last 2 years) might have massive data, use monthly directly
+            return queryAggregatesByYearMonthly(year, mode, accountId);
+        }
+
         try {
             Date yearStart = Date.newInstance(year, 1, 1);
             Date yearEnd = Date.newInstance(year, 12, 31);
@@ -106,19 +113,15 @@ public with sharing class AccountLinkerController {
 
             query += 'Distributor_Invoice_Date__c >= :yearStart AND Distributor_Invoice_Date__c <= :yearEnd ' +
                 'GROUP BY Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
-                'CALENDAR_YEAR(Distributor_Invoice_Date__c)';
+                'CALENDAR_YEAR(Distributor_Invoice_Date__c) ' +
+                'ORDER BY SUM(Revenue_Net__c) DESC ' +
+                'LIMIT 2000';
 
             return Database.query(query);
         } catch (Exception e) {
             // If query fails (likely too many rows in this year), split by month
-            if (e.getMessage().contains('Too many query rows')) {
-                System.debug('Year ' + year + ' has too many rows, splitting by month');
-                return queryAggregatesByYearMonthly(year, mode, accountId);
-            }
-
-            // For other errors, log and return empty
-            System.debug('Error querying year ' + year + ': ' + e.getMessage());
-            return new List<AggregateResult>();
+            System.debug('Year ' + year + ' query failed, falling back to monthly: ' + e.getMessage());
+            return queryAggregatesByYearMonthly(year, mode, accountId);
         }
     }
 
