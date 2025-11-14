@@ -48,7 +48,7 @@ public with sharing class AccountLinkerController {
             // Wrap cache access in try-catch to handle missing cache partition
             String cachedData = null;
             try {
-                cachedData = (String)Cache.Org.get('local.TraceSales.aggregated_unlinked');
+                cachedData = (String)Cache.Org.get('local.TraceSales.unlinked');
             } catch (Exception cacheEx) {
                 System.debug('Cache not available: ' + cacheEx.getMessage());
                 // Cache partition doesn't exist, continue without cache

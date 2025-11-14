@@ -111,8 +111,9 @@ public class TraceSaleAggregationBatch implements Database.Batchable<sObject>, D
         results = sortByRevenue(results);
 
         // Store in Platform Cache (max 50MB)
+        // Cache keys must be alphanumeric only (no underscores)
         try {
-            Cache.Org.put('local.TraceSales.aggregated_' + mode,
+            Cache.Org.put('local.TraceSales.' + mode,
                           JSON.serialize(results),
                           3600); // 1 hour TTL
 
