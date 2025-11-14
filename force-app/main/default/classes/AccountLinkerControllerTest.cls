@@ -85,7 +85,7 @@ private class AccountLinkerControllerTest {
             Country__c = 'USA',
             Revenue_Net__c = 10,
             Contract_Name_Number__c = 'K-100',
-            Distributor_Invoice_Date__c = y2024,
+            Distributor_Invoice_Date__c = Date.newInstance(2024, 6, 15),
             Trace_Account_Mapping__c = mapAcme.Id
         );
         Trace_Sale__c tsL2 = new Trace_Sale__c(
@@ -97,7 +97,7 @@ private class AccountLinkerControllerTest {
             Country__c = 'USA',
             Revenue_Net__c = 20,
             Contract_Name_Number__c = 'K-101',
-            Distributor_Invoice_Date__c = y2024,
+            Distributor_Invoice_Date__c = Date.newInstance(2024, 7, 20),
             Trace_Account_Mapping__c = mapAcme.Id
         );
         insert new List<Trace_Sale__c>{ tsL1, tsL2 };
