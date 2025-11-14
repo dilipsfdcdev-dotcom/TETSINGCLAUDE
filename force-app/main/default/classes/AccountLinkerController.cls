@@ -151,6 +151,19 @@ public with sharing class AccountLinkerController {
     }
 
     /**
+     * Get total count of unlinked trace sales records
+     * Used to display meaningful loading messages
+     */
+    @AuraEnabled
+    public static Integer getUnlinkedTraceSalesCount() {
+        try {
+            return [SELECT COUNT() FROM Trace_Sale__c WHERE Trace_Account_Mapping__c = null];
+        } catch (Exception e) {
+            throw new AuraHandledException('Error getting record count: ' + e.getMessage());
+        }
+    }
+
+    /**
      * Helper method to query aggregates for a specific year
      * If query fails (e.g., too many rows in year), splits by month
      */
