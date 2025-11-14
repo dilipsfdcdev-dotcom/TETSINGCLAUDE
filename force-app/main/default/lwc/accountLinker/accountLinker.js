@@ -5,6 +5,8 @@ import getAggregatedUnlinkedTraceSales from '@salesforce/apex/AccountLinkerContr
 import getAggregatedLinkedTraceSales from '@salesforce/apex/AccountLinkerController.getAggregatedLinkedTraceSales';
 import createTraceAccountMappings from '@salesforce/apex/AccountLinkerController.createTraceAccountMappings';
 import unlinkTraceAccountMappings from '@salesforce/apex/AccountLinkerController.unlinkTraceAccountMappings';
+import startAggregationBatchJob from '@salesforce/apex/AccountLinkerController.startAggregationBatchJob';
+import checkBatchJobStatus from '@salesforce/apex/AccountLinkerController.checkBatchJobStatus';
 
 export default class AccountLinker extends LightningElement {
     @track currentScreen = 'screen1';
@@ -23,6 +25,11 @@ export default class AccountLinker extends LightningElement {
     
     // Filter panel state
     @track isFilterPanelOpen = false;
+
+    // Batch job tracking
+    @track batchJobId = null;
+    @track batchStatus = null;
+    @track pollingInterval = null;
 
     // Filters
     @track filters = {
@@ -267,7 +274,7 @@ export default class AccountLinker extends LightningElement {
         return end > this.filteredRecords.length ? this.filteredRecords.length : end;
     }
     
-    // Load data methods - now using aggregated data with year-chunked queries
+    // Load data methods - supports both direct query and batch processing
     loadUnlinkedTraceSales() {
         this.isTableLoading = true;
         this.allRecords = [];
@@ -275,15 +282,25 @@ export default class AccountLinker extends LightningElement {
         this.paginatedRecords = [];
 
         getAggregatedUnlinkedTraceSales()
-            .then(result => {
-                if (result && result.length > 0) {
-                    this.allRecords = this.mapAggregatedDataToTableData(result);
-                    this.applyFiltersAndPagination();
-                } else {
-                    this.allRecords = [];
-                    this.filteredRecords = [];
-                    this.paginatedRecords = [];
-                    this.totalRecords = 0;
+            .then(response => {
+                if (response.status === 'ready') {
+                    // Data is ready (from cache or direct query)
+                    const data = response.data;
+                    if (data && data.length > 0) {
+                        this.allRecords = this.mapAggregatedDataToTableData(data);
+                        this.applyFiltersAndPagination();
+                        this.showToast('Success', `Loaded ${data.length} groups from ${response.source}`, 'success');
+                    } else {
+                        this.allRecords = [];
+                        this.filteredRecords = [];
+                        this.paginatedRecords = [];
+                        this.totalRecords = 0;
+                    }
+                    this.isTableLoading = false;
+                } else if (response.status === 'needs_batch') {
+                    // Dataset too large, need to start batch job
+                    this.showToast('Info', 'Processing 987K records. Starting batch job...', 'info');
+                    this.startBatchProcessing();
                 }
             })
             .catch(error => {
@@ -296,10 +313,70 @@ export default class AccountLinker extends LightningElement {
                 this.allRecords = [];
                 this.filteredRecords = [];
                 this.paginatedRecords = [];
-            })
-            .finally(() => {
                 this.isTableLoading = false;
             });
+    }
+
+    startBatchProcessing() {
+        startAggregationBatchJob({ mode: 'unlinked' })
+            .then(jobId => {
+                this.batchJobId = jobId;
+                this.showToast('Batch Started', `Processing all records. Job ID: ${jobId}`, 'info');
+                // Start polling for batch status
+                this.startPollingBatchStatus();
+            })
+            .catch(error => {
+                this.showToast('Error', 'Failed to start batch job', 'error');
+                console.error('Batch start error:', error);
+                this.isTableLoading = false;
+            });
+    }
+
+    startPollingBatchStatus() {
+        // Poll every 5 seconds
+        this.pollingInterval = setInterval(() => {
+            this.checkBatchStatus();
+        }, 5000);
+    }
+
+    checkBatchStatus() {
+        if (!this.batchJobId) return;
+
+        checkBatchJobStatus({ jobId: this.batchJobId })
+            .then(status => {
+                this.batchStatus = status;
+
+                if (status.status === 'Completed') {
+                    clearInterval(this.pollingInterval);
+                    this.showToast('Success', 'Batch processing completed! Reloading data...', 'success');
+                    // Reload data from cache
+                    setTimeout(() => {
+                        this.loadUnlinkedTraceSales();
+                    }, 1000);
+                } else if (status.status === 'Failed' || status.status === 'Aborted') {
+                    clearInterval(this.pollingInterval);
+                    this.showToast('Error', `Batch ${status.status}: ${status.extendedStatus}`, 'error');
+                    this.isTableLoading = false;
+                } else {
+                    // Still processing
+                    const progress = status.total > 0
+                        ? Math.round((status.processed / status.total) * 100)
+                        : 0;
+                    console.log(`Batch progress: ${progress}% (${status.processed}/${status.total})`);
+                }
+            })
+            .catch(error => {
+                console.error('Error checking batch status:', error);
+                clearInterval(this.pollingInterval);
+                this.isTableLoading = false;
+            });
+    }
+
+    disconnectedCallback() {
+        // Clean up polling when component is destroyed
+        if (this.pollingInterval) {
+            clearInterval(this.pollingInterval);
+        }
     }
 
     loadLinkedTraceSales() {

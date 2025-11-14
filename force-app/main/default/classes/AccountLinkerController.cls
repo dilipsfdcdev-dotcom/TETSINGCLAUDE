@@ -38,41 +38,115 @@ public with sharing class AccountLinkerController {
     }
     
     /**
-     * Get aggregated unlinked Trace Sales using year-chunked queries
-     * Splits queries by year to avoid hitting the 50k row limit
-     * Processes last 15 years of data to stay within limits
+     * Get aggregated unlinked Trace Sales
+     * Checks cache first, falls back to Batch Apex for large datasets (>50K rows)
      */
     @AuraEnabled
-    public static List<AggregatedTraceSale> getAggregatedUnlinkedTraceSales() {
+    public static Map<String, Object> getAggregatedUnlinkedTraceSales() {
         try {
-            Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
+            // Check if results are in cache (from batch job)
+            String cachedData = (String)Cache.Org.get('local.TraceSales.aggregated_unlinked');
 
-            // Get current year and process data year by year for the last 15 years
-            Integer currentYear = Date.today().year();
-            Integer startYear = currentYear - 14; // Last 15 years including current year
+            if (String.isNotBlank(cachedData)) {
+                List<AggregatedTraceSale> results =
+                    (List<AggregatedTraceSale>)JSON.deserialize(cachedData, List<AggregatedTraceSale>.class);
 
-            // Process each year separately to avoid scanning too many rows
-            for (Integer year = startYear; year <= currentYear; year++) {
-                List<AggregateResult> yearResults = queryAggregatesByYear(year, 'unlinked', null);
-                mergeAggregateResults(yearResults, aggregationMap);
+                return new Map<String, Object>{
+                    'status' => 'ready',
+                    'data' => results,
+                    'source' => 'cache'
+                };
             }
 
-            // Convert map to list and sort by revenue
-            List<AggregatedTraceSale> results = aggregationMap.values();
-            results = sortByRevenue(results);
+            // Try direct query for smaller datasets
+            try {
+                Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
 
-            // Return top 2000 to keep response size manageable
-            if (results.size() > 2000) {
-                List<AggregatedTraceSale> topResults = new List<AggregatedTraceSale>();
-                for (Integer i = 0; i < 2000; i++) {
-                    topResults.add(results[i]);
+                // Get current year and process data year by year for the last 15 years
+                Integer currentYear = Date.today().year();
+                Integer startYear = currentYear - 14; // Last 15 years including current year
+
+                // Process each year separately to avoid scanning too many rows
+                for (Integer year = startYear; year <= currentYear; year++) {
+                    List<AggregateResult> yearResults = queryAggregatesByYear(year, 'unlinked', null);
+                    mergeAggregateResults(yearResults, aggregationMap);
                 }
-                return topResults;
-            }
 
-            return results;
+                // Convert map to list and sort by revenue
+                List<AggregatedTraceSale> results = aggregationMap.values();
+                results = sortByRevenue(results);
+
+                // Return top 2000 to keep response size manageable
+                if (results.size() > 2000) {
+                    List<AggregatedTraceSale> topResults = new List<AggregatedTraceSale>();
+                    for (Integer i = 0; i < 2000; i++) {
+                        topResults.add(results[i]);
+                    }
+                    return new Map<String, Object>{
+                        'status' => 'ready',
+                        'data' => topResults,
+                        'source' => 'direct'
+                    };
+                }
+
+                return new Map<String, Object>{
+                    'status' => 'ready',
+                    'data' => results,
+                    'source' => 'direct'
+                };
+            } catch (Exception queryEx) {
+                // Direct query failed (likely too many rows), need batch job
+                return new Map<String, Object>{
+                    'status' => 'needs_batch',
+                    'data' => null,
+                    'message' => 'Dataset too large for direct query. Please start batch processing.'
+                };
+            }
         } catch (Exception e) {
             throw new AuraHandledException('Error fetching unlinked trace sales: ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Start batch job to process all records and compute aggregations
+     * Use this for datasets larger than 50K rows
+     */
+    @AuraEnabled
+    public static String startAggregationBatchJob(String mode) {
+        try {
+            TraceSaleAggregationBatch batch = new TraceSaleAggregationBatch(mode, null);
+            Id batchId = Database.executeBatch(batch, 2000); // Process 2000 records per batch
+
+            return batchId;
+        } catch (Exception e) {
+            throw new AuraHandledException('Error starting batch job: ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Check status of batch job
+     */
+    @AuraEnabled
+    public static Map<String, Object> checkBatchJobStatus(String jobId) {
+        try {
+            AsyncApexJob job = [
+                SELECT Id, Status, NumberOfErrors, JobItemsProcessed, TotalJobItems,
+                       ExtendedStatus, CompletedDate
+                FROM AsyncApexJob
+                WHERE Id = :jobId
+                LIMIT 1
+            ];
+
+            return new Map<String, Object>{
+                'status' => job.Status,
+                'processed' => job.JobItemsProcessed,
+                'total' => job.TotalJobItems,
+                'errors' => job.NumberOfErrors,
+                'extendedStatus' => job.ExtendedStatus,
+                'completedDate' => job.CompletedDate
+            };
+        } catch (Exception e) {
+            throw new AuraHandledException('Error checking batch status: ' + e.getMessage());
         }
     }
 
