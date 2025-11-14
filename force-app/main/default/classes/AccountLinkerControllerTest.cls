@@ -339,6 +339,142 @@ private class AccountLinkerControllerTest {
     }
 
     @IsTest
+    static void testQueryAggregatesByYearMonthly() {
+        // Create records across multiple months in 2024 to test monthly aggregation
+        List<Trace_Sale__c> monthlySales = new List<Trace_Sale__c>();
+        for (Integer month = 1; month <= 12; month++) {
+            monthlySales.add(new Trace_Sale__c(
+                Distributor__c = 'MonthlyDist',
+                Customer__c = 'MonthlyCust',
+                Zip_Code__c = '12345',
+                City__c = 'Monthly City',
+                State__c = 'MC',
+                Country__c = 'USA',
+                Revenue_Net__c = 100 * month,
+                Contract_Name_Number__c = 'M-' + month,
+                Distributor_Invoice_Date__c = Date.newInstance(2024, month, 15)
+            ));
+        }
+        insert monthlySales;
+
+        Test.startTest();
+        // Directly test the monthly aggregation method
+        List<AggregateResult> results = AccountLinkerController.queryAggregatesByYearMonthly(2024, 'unlinked', null);
+        Test.stopTest();
+
+        // Should return aggregate results for 2024
+        System.assert(results.size() > 0, 'Should return monthly aggregate results');
+    }
+
+    @IsTest
+    static void testQueryAggregatesByYear() {
+        Test.startTest();
+        // Directly test the year query method
+        List<AggregateResult> results = AccountLinkerController.queryAggregatesByYear(2024, 'unlinked', null);
+        Test.stopTest();
+
+        // Should return results for 2024
+        System.assert(results != null, 'Should return aggregate results for year');
+    }
+
+    @IsTest
+    static void testMergeAggregateResults() {
+        // Create test aggregate results
+        List<Trace_Sale__c> testSales = new List<Trace_Sale__c>();
+        testSales.add(new Trace_Sale__c(
+            Distributor__c = 'MergeDist',
+            Customer__c = 'MergeCust',
+            Zip_Code__c = '99999',
+            City__c = 'Merge City',
+            State__c = 'MG',
+            Country__c = 'USA',
+            Revenue_Net__c = 500,
+            Distributor_Invoice_Date__c = Date.newInstance(2024, 1, 1)
+        ));
+        testSales.add(new Trace_Sale__c(
+            Distributor__c = 'MergeDist',
+            Customer__c = 'MergeCust',
+            Zip_Code__c = '99999',
+            City__c = 'Merge City',
+            State__c = 'MG',
+            Country__c = 'USA',
+            Revenue_Net__c = 300,
+            Distributor_Invoice_Date__c = Date.newInstance(2024, 1, 15)
+        ));
+        insert testSales;
+
+        Test.startTest();
+        // Query aggregates
+        List<AggregateResult> aggResults = [
+            SELECT Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c,
+                   CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal,
+                   SUM(Revenue_Net__c) totalRevenue, COUNT(Id) recordCount
+            FROM Trace_Sale__c
+            WHERE Distributor__c = 'MergeDist'
+            GROUP BY Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c,
+                     CALENDAR_YEAR(Distributor_Invoice_Date__c)
+        ];
+
+        // Test merge method
+        Map<String, AccountLinkerController.AggregatedTraceSale> testMap =
+            new Map<String, AccountLinkerController.AggregatedTraceSale>();
+        AccountLinkerController.mergeAggregateResults(aggResults, testMap);
+        Test.stopTest();
+
+        System.assert(testMap.size() > 0, 'Should merge results into map');
+        // Verify merged revenue
+        for (AccountLinkerController.AggregatedTraceSale agg : testMap.values()) {
+            System.assertEquals(800, agg.totalRevenue, 'Should sum revenues: 500 + 300 = 800');
+        }
+    }
+
+    @IsTest
+    static void testSortByRevenue() {
+        // Create test data with different revenues
+        List<AccountLinkerController.AggregatedTraceSale> unsorted =
+            new List<AccountLinkerController.AggregatedTraceSale>();
+
+        AccountLinkerController.AggregatedTraceSale agg1 = new AccountLinkerController.AggregatedTraceSale();
+        agg1.totalRevenue = 100;
+        agg1.groupKey = 'test1';
+
+        AccountLinkerController.AggregatedTraceSale agg2 = new AccountLinkerController.AggregatedTraceSale();
+        agg2.totalRevenue = 500;
+        agg2.groupKey = 'test2';
+
+        AccountLinkerController.AggregatedTraceSale agg3 = new AccountLinkerController.AggregatedTraceSale();
+        agg3.totalRevenue = 300;
+        agg3.groupKey = 'test3';
+
+        unsorted.add(agg1);
+        unsorted.add(agg2);
+        unsorted.add(agg3);
+
+        Test.startTest();
+        List<AccountLinkerController.AggregatedTraceSale> sorted =
+            AccountLinkerController.sortByRevenue(unsorted);
+        Test.stopTest();
+
+        // Should be sorted descending: 500, 300, 100
+        System.assertEquals(500, sorted[0].totalRevenue, 'First should have highest revenue');
+        System.assertEquals(300, sorted[1].totalRevenue, 'Second should have middle revenue');
+        System.assertEquals(100, sorted[2].totalRevenue, 'Third should have lowest revenue');
+    }
+
+    @IsTest
+    static void testQueryAggregatesByYearForLinkedMode() {
+        Account acme = [SELECT Id FROM Account WHERE Name = 'Acme Medical' LIMIT 1];
+
+        Test.startTest();
+        // Test linked mode query
+        List<AggregateResult> results = AccountLinkerController.queryAggregatesByYear(2024, 'linked', acme.Id);
+        Test.stopTest();
+
+        // Should return results for linked records
+        System.assert(results != null, 'Should return results for linked mode');
+    }
+
+    @IsTest
 static void testCreateAndUnlinkTraceAccountMappings() {
     // Create a fresh Account to link against (so we don't disturb setup mappings)
     Account gamma = new Account(Name = 'Gamma Health', Type = 'Customer');

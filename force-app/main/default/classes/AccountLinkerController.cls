@@ -80,6 +80,7 @@ public with sharing class AccountLinkerController {
      * Helper method to query aggregates for a specific year
      * If query fails (e.g., too many rows in year), splits by month
      */
+    @TestVisible
     private static List<AggregateResult> queryAggregatesByYear(Integer year, String mode, String accountId) {
         try {
             Date yearStart = Date.newInstance(year, 1, 1);
@@ -125,6 +126,7 @@ public with sharing class AccountLinkerController {
      * Fallback method to query aggregates by month when a year has too many records
      * Uses LIMIT per query to ensure we stay within row scan limits
      */
+    @TestVisible
     private static List<AggregateResult> queryAggregatesByYearMonthly(Integer year, String mode, String accountId) {
         List<AggregateResult> allMonthResults = new List<AggregateResult>();
 
@@ -173,6 +175,7 @@ public with sharing class AccountLinkerController {
     /**
      * Helper method to merge aggregate results into the main map
      */
+    @TestVisible
     private static void mergeAggregateResults(List<AggregateResult> aggregateResults, Map<String, AggregatedTraceSale> aggregationMap) {
         for (AggregateResult ar : aggregateResults) {
             String distributor = ar.get('Distributor__c') != null ? String.valueOf(ar.get('Distributor__c')) : '';
@@ -211,6 +214,7 @@ public with sharing class AccountLinkerController {
     /**
      * Helper method to sort aggregated results by revenue descending
      */
+    @TestVisible
     private static List<AggregatedTraceSale> sortByRevenue(List<AggregatedTraceSale> results) {
         // Simple bubble sort for descending revenue
         for (Integer i = 0; i < results.size(); i++) {
