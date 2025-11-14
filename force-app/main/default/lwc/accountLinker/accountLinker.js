@@ -270,14 +270,32 @@ export default class AccountLinker extends LightningElement {
     // Load data methods - now using aggregated data with year-chunked queries
     loadUnlinkedTraceSales() {
         this.isTableLoading = true;
+        this.allRecords = [];
+        this.filteredRecords = [];
+        this.paginatedRecords = [];
+
         getAggregatedUnlinkedTraceSales()
             .then(result => {
-                this.allRecords = this.mapAggregatedDataToTableData(result);
-                this.applyFiltersAndPagination();
+                if (result && result.length > 0) {
+                    this.allRecords = this.mapAggregatedDataToTableData(result);
+                    this.applyFiltersAndPagination();
+                } else {
+                    this.allRecords = [];
+                    this.filteredRecords = [];
+                    this.paginatedRecords = [];
+                    this.totalRecords = 0;
+                }
             })
             .catch(error => {
-                this.showToast('Error', 'Failed to load trace sales records', 'error');
+                let errorMessage = 'Failed to load trace sales records';
+                if (error?.body?.message) {
+                    errorMessage = error.body.message;
+                }
+                this.showToast('Error', errorMessage, 'error');
                 console.error('Load error:', error);
+                this.allRecords = [];
+                this.filteredRecords = [];
+                this.paginatedRecords = [];
             })
             .finally(() => {
                 this.isTableLoading = false;
@@ -286,14 +304,32 @@ export default class AccountLinker extends LightningElement {
 
     loadLinkedTraceSales() {
         this.isTableLoading = true;
+        this.allRecords = [];
+        this.filteredRecords = [];
+        this.paginatedRecords = [];
+
         getAggregatedLinkedTraceSales({ accountId: this.selectedAccount.id })
             .then(result => {
-                this.allRecords = this.mapAggregatedDataToTableData(result);
-                this.applyFiltersAndPagination();
+                if (result && result.length > 0) {
+                    this.allRecords = this.mapAggregatedDataToTableData(result);
+                    this.applyFiltersAndPagination();
+                } else {
+                    this.allRecords = [];
+                    this.filteredRecords = [];
+                    this.paginatedRecords = [];
+                    this.totalRecords = 0;
+                }
             })
             .catch(error => {
-                this.showToast('Error', 'Failed to load linked records', 'error');
+                let errorMessage = 'Failed to load linked records';
+                if (error?.body?.message) {
+                    errorMessage = error.body.message;
+                }
+                this.showToast('Error', errorMessage, 'error');
                 console.error('Load error:', error);
+                this.allRecords = [];
+                this.filteredRecords = [];
+                this.paginatedRecords = [];
             })
             .finally(() => {
                 this.isTableLoading = false;
@@ -403,28 +439,36 @@ export default class AccountLinker extends LightningElement {
     // Selection handlers
     handleSelectAll(event) {
         const isChecked = event.target.checked;
-        
+
+        // Create a new Set to trigger reactivity
+        const updatedSelection = new Set(this.selectedGroupKeys);
+
         this.paginatedRecords.forEach(record => {
             if (isChecked) {
-                this.selectedGroupKeys.add(record.groupKey);
+                updatedSelection.add(record.groupKey);
             } else {
-                this.selectedGroupKeys.delete(record.groupKey);
+                updatedSelection.delete(record.groupKey);
             }
         });
-        
+
+        this.selectedGroupKeys = updatedSelection;
         this.updatePaginatedRecords();
     }
-    
+
     handleRowSelect(event) {
         const groupKey = event.target.dataset.id;
         const isChecked = event.target.checked;
-        
+
+        // Create a new Set to trigger reactivity
+        const updatedSelection = new Set(this.selectedGroupKeys);
+
         if (isChecked) {
-            this.selectedGroupKeys.add(groupKey);
+            updatedSelection.add(groupKey);
         } else {
-            this.selectedGroupKeys.delete(groupKey);
+            updatedSelection.delete(groupKey);
         }
-        
+
+        this.selectedGroupKeys = updatedSelection;
         this.updatePaginatedRecords();
     }
     
@@ -433,13 +477,23 @@ export default class AccountLinker extends LightningElement {
         if (this.currentPage > 1) {
             this.currentPage--;
             this.updatePaginatedRecords();
+            this.scrollToTableTop();
         }
     }
-    
+
     handleNextPage() {
         if (this.currentPage < this.totalPages) {
             this.currentPage++;
             this.updatePaginatedRecords();
+            this.scrollToTableTop();
+        }
+    }
+
+    scrollToTableTop() {
+        // Scroll to top of table for better UX
+        const tableContainer = this.template.querySelector('.table-container');
+        if (tableContainer) {
+            tableContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     }
     
@@ -452,60 +506,84 @@ export default class AccountLinker extends LightningElement {
     // Link/Unlink actions - now creating mapping records
     handleLinkSelectedAccounts() {
         if (this.selectedGroupKeys.size === 0) {
-            this.showToast('Warning', 'Please select at least one record', 'warning');
+            this.showToast('Warning', 'Please select at least one record to link', 'warning');
             return;
         }
-        
+
         this.isTableLoading = true;
-        
+        const selectionCount = this.selectedGroupKeys.size;
+
         // Get the selected aggregated records
-        const selectedRecords = this.allRecords.filter(rec => 
+        const selectedRecords = this.allRecords.filter(rec =>
             this.selectedGroupKeys.has(rec.groupKey)
         ).map(rec => rec.rawData);
-        
+
+        // Validate all records have required data
+        const invalidRecords = selectedRecords.filter(rec => !rec.distributor && !rec.customer);
+        if (invalidRecords.length > 0) {
+            this.showToast('Error', 'Some selected records have invalid data', 'error');
+            this.isTableLoading = false;
+            return;
+        }
+
         // Convert to JSON for Apex
         const aggregatedDataJson = JSON.stringify(selectedRecords);
-        
-        createTraceAccountMappings({ 
+
+        createTraceAccountMappings({
             aggregatedDataJson: aggregatedDataJson,
-            accountId: this.selectedAccount.id 
+            accountId: this.selectedAccount.id
         })
             .then(() => {
-                this.showToast('Success', `Successfully linked ${this.selectedGroupKeys.size} record(s)`, 'success');
-                this.selectedGroupKeys.clear();
+                this.showToast('Success', `Successfully linked ${selectionCount} record group(s) to ${this.selectedAccount.name}`, 'success');
+                // Clear selections and reload
+                this.selectedGroupKeys = new Set();
                 this.loadUnlinkedTraceSales();
             })
             .catch(error => {
-                this.showToast('Error', 'Failed to link records', 'error');
+                let errorMessage = 'Failed to link records';
+                if (error?.body?.message) {
+                    errorMessage = error.body.message;
+                } else if (error?.message) {
+                    errorMessage = error.message;
+                }
+                this.showToast('Error', errorMessage, 'error');
                 console.error('Link error:', error);
                 this.isTableLoading = false;
             });
     }
-    
+
     handleUnlinkSelectedAccounts() {
         if (this.selectedGroupKeys.size === 0) {
-            this.showToast('Warning', 'Please select at least one record', 'warning');
+            this.showToast('Warning', 'Please select at least one record to unlink', 'warning');
             return;
         }
-        
+
         this.isTableLoading = true;
-        
+        const selectionCount = this.selectedGroupKeys.size;
+
         // Get the selected aggregated records
-        const selectedRecords = this.allRecords.filter(rec => 
+        const selectedRecords = this.allRecords.filter(rec =>
             this.selectedGroupKeys.has(rec.groupKey)
         ).map(rec => rec.rawData);
-        
+
         // Convert to JSON for Apex
         const aggregatedDataJson = JSON.stringify(selectedRecords);
-        
+
         unlinkTraceAccountMappings({ aggregatedDataJson: aggregatedDataJson })
             .then(() => {
-                this.showToast('Success', `Successfully unlinked ${this.selectedGroupKeys.size} record(s)`, 'success');
-                this.selectedGroupKeys.clear();
+                this.showToast('Success', `Successfully unlinked ${selectionCount} record group(s) from ${this.selectedAccount.name}`, 'success');
+                // Clear selections and reload
+                this.selectedGroupKeys = new Set();
                 this.loadLinkedTraceSales();
             })
             .catch(error => {
-                this.showToast('Error', 'Failed to unlink records', 'error');
+                let errorMessage = 'Failed to unlink records';
+                if (error?.body?.message) {
+                    errorMessage = error.body.message;
+                } else if (error?.message) {
+                    errorMessage = error.message;
+                }
+                this.showToast('Error', errorMessage, 'error');
                 console.error('Unlink error:', error);
                 this.isTableLoading = false;
             });

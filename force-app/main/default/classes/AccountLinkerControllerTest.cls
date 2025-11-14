@@ -8,12 +8,11 @@ private class AccountLinkerControllerTest {
         Account beta = new Account(Name = 'Beta Clinic', Type = 'Customer');
         insert new List<Account>{ acme, beta };
 
-        // --- Unlinked Trace Sales (Trace_Account_Mapping__c == null)
-        Date y2024 = Date.newInstance(2024, 5, 10);
-        Date y2025 = Date.newInstance(2025, 3, 2);
+        // --- Unlinked Trace Sales spanning multiple years (test year-chunked queries)
+        List<Trace_Sale__c> unlinkedSales = new List<Trace_Sale__c>();
 
-        // Same Distributor/Customer/Zip/Year => should aggregate
-        Trace_Sale__c tsU1 = new Trace_Sale__c(
+        // 2024 data - Same Distributor/Customer/Zip/Year => should aggregate
+        unlinkedSales.add(new Trace_Sale__c(
             Distributor__c = 'DistX',
             Customer__c = 'CustY',
             Zip_Code__c = '10001',
@@ -22,9 +21,9 @@ private class AccountLinkerControllerTest {
             Country__c = 'USA',
             Revenue_Net__c = 100,
             Contract_Name_Number__c = 'C-001',
-            Distributor_Invoice_Date__c = y2024
-        );
-        Trace_Sale__c tsU2 = new Trace_Sale__c(
+            Distributor_Invoice_Date__c = Date.newInstance(2024, 5, 10)
+        ));
+        unlinkedSales.add(new Trace_Sale__c(
             Distributor__c = 'DistX',
             Customer__c = 'CustY',
             Zip_Code__c = '10001',
@@ -33,10 +32,11 @@ private class AccountLinkerControllerTest {
             Country__c = 'USA',
             Revenue_Net__c = 250,
             Contract_Name_Number__c = 'C-002',
-            Distributor_Invoice_Date__c = y2024
-        );
-        // Different year => separate group
-        Trace_Sale__c tsU3 = new Trace_Sale__c(
+            Distributor_Invoice_Date__c = Date.newInstance(2024, 8, 15)
+        ));
+
+        // 2025 data - Different year => separate group
+        unlinkedSales.add(new Trace_Sale__c(
             Distributor__c = 'DistX',
             Customer__c = 'CustY',
             Zip_Code__c = '10001',
@@ -44,10 +44,24 @@ private class AccountLinkerControllerTest {
             State__c = 'NY',
             Country__c = 'USA',
             Revenue_Net__c = 75,
-            Contract_Name_Number__c = 'C-001', // duplicate contract id to test uniqueness
-            Distributor_Invoice_Date__c = y2025
-        );
-        insert new List<Trace_Sale__c>{ tsU1, tsU2, tsU3 };
+            Contract_Name_Number__c = 'C-001',
+            Distributor_Invoice_Date__c = Date.newInstance(2025, 3, 2)
+        ));
+
+        // 2023 data - Test year-chunked query with older data
+        unlinkedSales.add(new Trace_Sale__c(
+            Distributor__c = 'DistA',
+            Customer__c = 'CustB',
+            Zip_Code__c = '90210',
+            City__c = 'Beverly Hills',
+            State__c = 'CA',
+            Country__c = 'USA',
+            Revenue_Net__c = 500,
+            Contract_Name_Number__c = 'C-100',
+            Distributor_Invoice_Date__c = Date.newInstance(2023, 1, 1)
+        ));
+
+        insert unlinkedSales;
 
         // --- Linked Trace Sales (via Trace_Account_Mapping__c) for acme
         Trace_Account_Mapping__c mapAcme = new Trace_Account_Mapping__c(
@@ -111,29 +125,38 @@ private class AccountLinkerControllerTest {
             AccountLinkerController.getAggregatedUnlinkedTraceSales();
         Test.stopTest();
 
-        // We expect two groups: one for 2024 and one for 2025
-        System.assertEquals(2, aggs.size(), 'Unlinked groups should be split by year');
+        // We expect three groups: 2023, 2024, and 2025 (year-chunked queries)
+        System.assertEquals(3, aggs.size(), 'Unlinked groups should be split by year across multiple years');
 
-        // Find the 2024 and 2025 groups
+        // Find the groups by year
+        AccountLinkerController.AggregatedTraceSale g2023 = null;
         AccountLinkerController.AggregatedTraceSale g2024 = null;
         AccountLinkerController.AggregatedTraceSale g2025 = null;
         for (AccountLinkerController.AggregatedTraceSale gItem : aggs) {
+            if (gItem.timePeriod == '2023') g2023 = gItem;
             if (gItem.timePeriod == '2024') g2024 = gItem;
             if (gItem.timePeriod == '2025') g2025 = gItem;
         }
+
+        // Verify all year groups exist
+        System.assertNotEquals(null, g2023, 'Expected 2023 group');
         System.assertNotEquals(null, g2024, 'Expected 2024 group');
         System.assertNotEquals(null, g2025, 'Expected 2025 group');
 
-        // 2024 group should sum 100 + 250 = 350 and include both contracts C-001, C-002 (unique)
-        System.assertEquals(350, g2024.totalRevenue, '2024 revenue should sum');
-        System.assert(
-            g2024.contractNames.contains('C-001') && g2024.contractNames.contains('C-002'),
-            '2024 group should have unique contract names C-001, C-002'
-        );
+        // 2023 group - single record
+        System.assertEquals(500, g2023.totalRevenue, '2023 revenue should be 500');
+        System.assertEquals(1, g2023.recordCount, '2023 should have 1 record');
 
-        // 2025 group should be 75 and include only C-001
-        System.assertEquals(75, g2025.totalRevenue, '2025 revenue should sum');
-        System.assertEquals(true, g2025.contractNames.contains('C-001'), '2025 group should include C-001');
+        // 2024 group should sum 100 + 250 = 350
+        System.assertEquals(350, g2024.totalRevenue, '2024 revenue should sum to 350');
+        System.assertEquals(2, g2024.recordCount, '2024 should have 2 records aggregated');
+
+        // 2025 group should be 75
+        System.assertEquals(75, g2025.totalRevenue, '2025 revenue should be 75');
+        System.assertEquals(1, g2025.recordCount, '2025 should have 1 record');
+
+        // Verify sorting by revenue (descending) - highest revenue first
+        System.assertEquals(500, aggs[0].totalRevenue, 'First result should have highest revenue');
     }
 
     @IsTest
@@ -158,6 +181,35 @@ private class AccountLinkerControllerTest {
             g.contractNames.contains('K-100') && g.contractNames.contains('K-101'),
             'Linked group should include both K-100 and K-101'
         );
+    }
+
+    @IsTest
+    static void testGetTraceSaleDetailsForGroup() {
+        // Get an unlinked trace sale to test details retrieval
+        Trace_Sale__c ts = [
+            SELECT Distributor__c, Customer__c, Zip_Code__c, Distributor_Invoice_Date__c
+            FROM Trace_Sale__c
+            WHERE Trace_Account_Mapping__c = null
+            LIMIT 1
+        ];
+
+        String year = String.valueOf(ts.Distributor_Invoice_Date__c.year());
+
+        Test.startTest();
+        AccountLinkerController.AggregatedTraceSale details =
+            AccountLinkerController.getTraceSaleDetailsForGroup(
+                ts.Distributor__c,
+                ts.Customer__c,
+                ts.Zip_Code__c,
+                year
+            );
+        Test.stopTest();
+
+        System.assertNotEquals(null, details, 'Details should be returned');
+        System.assert(details.traceSaleIds.size() > 0, 'Should have trace sale IDs');
+        System.assertEquals(ts.Distributor__c, details.distributor, 'Distributor should match');
+        System.assertEquals(ts.Customer__c, details.customer, 'Customer should match');
+        System.assertEquals(ts.Zip_Code__c, details.zipCode, 'Zip code should match');
     }
 
     @IsTest

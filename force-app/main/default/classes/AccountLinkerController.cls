@@ -78,6 +78,7 @@ public with sharing class AccountLinkerController {
 
     /**
      * Helper method to query aggregates for a specific year
+     * If query fails (e.g., too many rows in year), splits by month
      */
     private static List<AggregateResult> queryAggregatesByYear(Integer year, String mode, String accountId) {
         try {
@@ -108,10 +109,65 @@ public with sharing class AccountLinkerController {
 
             return Database.query(query);
         } catch (Exception e) {
-            // If query fails for this year, return empty list to continue processing other years
+            // If query fails (likely too many rows in this year), split by month
+            if (e.getMessage().contains('Too many query rows')) {
+                System.debug('Year ' + year + ' has too many rows, splitting by month');
+                return queryAggregatesByYearMonthly(year, mode, accountId);
+            }
+
+            // For other errors, log and return empty
             System.debug('Error querying year ' + year + ': ' + e.getMessage());
             return new List<AggregateResult>();
         }
+    }
+
+    /**
+     * Fallback method to query aggregates by month when a year has too many records
+     * Uses LIMIT per query to ensure we stay within row scan limits
+     */
+    private static List<AggregateResult> queryAggregatesByYearMonthly(Integer year, String mode, String accountId) {
+        List<AggregateResult> allMonthResults = new List<AggregateResult>();
+
+        // Process each month separately
+        for (Integer month = 1; month <= 12; month++) {
+            try {
+                Date monthStart = Date.newInstance(year, month, 1);
+                Date monthEnd = monthStart.addMonths(1).addDays(-1);
+
+                String query = 'SELECT ' +
+                    'Distributor__c, ' +
+                    'Customer__c, ' +
+                    'Zip_Code__c, ' +
+                    'City__c, ' +
+                    'State__c, ' +
+                    'Country__c, ' +
+                    'CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal, ' +
+                    'SUM(Revenue_Net__c) totalRevenue, ' +
+                    'COUNT(Id) recordCount ' +
+                    'FROM Trace_Sale__c WHERE ';
+
+                if (mode == 'unlinked') {
+                    query += 'Trace_Account_Mapping__c = null AND ';
+                } else if (mode == 'linked' && String.isNotBlank(accountId)) {
+                    query += 'Trace_Account_Mapping__r.Account__c = \'' + accountId + '\' AND ';
+                }
+
+                query += 'Distributor_Invoice_Date__c >= :monthStart AND Distributor_Invoice_Date__c <= :monthEnd ' +
+                    'GROUP BY Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
+                    'CALENDAR_YEAR(Distributor_Invoice_Date__c) ' +
+                    'ORDER BY SUM(Revenue_Net__c) DESC ' +
+                    'LIMIT 2000'; // Limit per month to prevent scanning too many rows
+
+                List<AggregateResult> monthResults = Database.query(query);
+                allMonthResults.addAll(monthResults);
+            } catch (Exception monthEx) {
+                System.debug('Error querying month ' + month + ' of year ' + year + ': ' + monthEx.getMessage());
+                // If even month fails, it's likely a data distribution issue
+                // Log and continue with other months
+            }
+        }
+
+        return allMonthResults;
     }
 
     /**
