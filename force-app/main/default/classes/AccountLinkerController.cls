@@ -38,68 +38,131 @@ public with sharing class AccountLinkerController {
     }
     
     /**
-     * Get aggregated unlinked Trace Sales using SOQL Aggregate Query
-     * This approach avoids hitting the 50k row limit by aggregating in the database
+     * Get aggregated unlinked Trace Sales using year-chunked queries
+     * Splits queries by year to avoid hitting the 50k row limit
+     * Processes last 15 years of data to stay within limits
      */
     @AuraEnabled
     public static List<AggregatedTraceSale> getAggregatedUnlinkedTraceSales() {
         try {
-            // Use aggregate query to get grouped data
-            List<AggregateResult> aggregateResults = [
-                SELECT 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal,
-                    SUM(Revenue_Net__c) totalRevenue,
-                    COUNT(Id) recordCount
-                FROM Trace_Sale__c
-                WHERE Trace_Account_Mapping__c = null
-                GROUP BY 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c)
-                ORDER BY SUM(Revenue_Net__c) DESC
-                LIMIT 2000
-            ];
-            
-            // Convert aggregate results to wrapper objects
-            List<AggregatedTraceSale> results = new List<AggregatedTraceSale>();
-            
-            for (AggregateResult ar : aggregateResults) {
-                AggregatedTraceSale agg = new AggregatedTraceSale();
-                
-                agg.distributor = ar.get('Distributor__c') != null ? String.valueOf(ar.get('Distributor__c')) : '';
-                agg.customer = ar.get('Customer__c') != null ? String.valueOf(ar.get('Customer__c')) : '';
-                agg.zipCode = ar.get('Zip_Code__c') != null ? String.valueOf(ar.get('Zip_Code__c')) : '';
-                agg.city = ar.get('City__c') != null ? String.valueOf(ar.get('City__c')) : '';
-                agg.state = ar.get('State__c') != null ? String.valueOf(ar.get('State__c')) : '';
-                agg.country = ar.get('Country__c') != null ? String.valueOf(ar.get('Country__c')) : '';
-                agg.timePeriod = ar.get('yearVal') != null ? String.valueOf(ar.get('yearVal')) : '';
-                agg.totalRevenue = ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0;
-                agg.recordCount = ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0;
-                
-                // Create group key
-                agg.groupKey = agg.distributor + '|' + agg.customer + '|' + agg.zipCode + '|' + agg.timePeriod;
-                
-                // Initialize empty lists/values that will be populated when needed
-                agg.traceSaleIds = new List<String>();
-                agg.contractNames = '';
-                
-                results.add(agg);
+            Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
+
+            // Get current year and process data year by year for the last 15 years
+            Integer currentYear = Date.today().year();
+            Integer startYear = currentYear - 14; // Last 15 years including current year
+
+            // Process each year separately to avoid scanning too many rows
+            for (Integer year = startYear; year <= currentYear; year++) {
+                List<AggregateResult> yearResults = queryAggregatesByYear(year, 'unlinked', null);
+                mergeAggregateResults(yearResults, aggregationMap);
             }
-            
+
+            // Convert map to list and sort by revenue
+            List<AggregatedTraceSale> results = aggregationMap.values();
+            results = sortByRevenue(results);
+
+            // Return top 2000 to keep response size manageable
+            if (results.size() > 2000) {
+                return new List<AggregatedTraceSale>(results).subList(0, 2000);
+            }
+
             return results;
         } catch (Exception e) {
             throw new AuraHandledException('Error fetching unlinked trace sales: ' + e.getMessage());
         }
+    }
+
+    /**
+     * Helper method to query aggregates for a specific year
+     */
+    private static List<AggregateResult> queryAggregatesByYear(Integer year, String mode, String accountId) {
+        try {
+            Date yearStart = Date.newInstance(year, 1, 1);
+            Date yearEnd = Date.newInstance(year, 12, 31);
+
+            String query = 'SELECT ' +
+                'Distributor__c, ' +
+                'Customer__c, ' +
+                'Zip_Code__c, ' +
+                'City__c, ' +
+                'State__c, ' +
+                'Country__c, ' +
+                'CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal, ' +
+                'SUM(Revenue_Net__c) totalRevenue, ' +
+                'COUNT(Id) recordCount ' +
+                'FROM Trace_Sale__c WHERE ';
+
+            if (mode == 'unlinked') {
+                query += 'Trace_Account_Mapping__c = null AND ';
+            } else if (mode == 'linked' && String.isNotBlank(accountId)) {
+                query += 'Trace_Account_Mapping__r.Account__c = \'' + accountId + '\' AND ';
+            }
+
+            query += 'Distributor_Invoice_Date__c >= :yearStart AND Distributor_Invoice_Date__c <= :yearEnd ' +
+                'GROUP BY Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
+                'CALENDAR_YEAR(Distributor_Invoice_Date__c)';
+
+            return Database.query(query);
+        } catch (Exception e) {
+            // If query fails for this year, return empty list to continue processing other years
+            System.debug('Error querying year ' + year + ': ' + e.getMessage());
+            return new List<AggregateResult>();
+        }
+    }
+
+    /**
+     * Helper method to merge aggregate results into the main map
+     */
+    private static void mergeAggregateResults(List<AggregateResult> aggregateResults, Map<String, AggregatedTraceSale> aggregationMap) {
+        for (AggregateResult ar : aggregateResults) {
+            String distributor = ar.get('Distributor__c') != null ? String.valueOf(ar.get('Distributor__c')) : '';
+            String customer = ar.get('Customer__c') != null ? String.valueOf(ar.get('Customer__c')) : '';
+            String zipCode = ar.get('Zip_Code__c') != null ? String.valueOf(ar.get('Zip_Code__c')) : '';
+            String timePeriod = ar.get('yearVal') != null ? String.valueOf(ar.get('yearVal')) : '';
+
+            String groupKey = distributor + '|' + customer + '|' + zipCode + '|' + timePeriod;
+
+            AggregatedTraceSale agg;
+            if (aggregationMap.containsKey(groupKey)) {
+                // Merge with existing
+                agg = aggregationMap.get(groupKey);
+                agg.totalRevenue += (ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0);
+                agg.recordCount += (ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0);
+            } else {
+                // Create new
+                agg = new AggregatedTraceSale();
+                agg.groupKey = groupKey;
+                agg.distributor = distributor;
+                agg.customer = customer;
+                agg.zipCode = zipCode;
+                agg.city = ar.get('City__c') != null ? String.valueOf(ar.get('City__c')) : '';
+                agg.state = ar.get('State__c') != null ? String.valueOf(ar.get('State__c')) : '';
+                agg.country = ar.get('Country__c') != null ? String.valueOf(ar.get('Country__c')) : '';
+                agg.timePeriod = timePeriod;
+                agg.totalRevenue = ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0;
+                agg.recordCount = ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0;
+                agg.traceSaleIds = new List<String>();
+                agg.contractNames = '';
+                aggregationMap.put(groupKey, agg);
+            }
+        }
+    }
+
+    /**
+     * Helper method to sort aggregated results by revenue descending
+     */
+    private static List<AggregatedTraceSale> sortByRevenue(List<AggregatedTraceSale> results) {
+        // Simple bubble sort for descending revenue
+        for (Integer i = 0; i < results.size(); i++) {
+            for (Integer j = i + 1; j < results.size(); j++) {
+                if (results[i].totalRevenue < results[j].totalRevenue) {
+                    AggregatedTraceSale temp = results[i];
+                    results[i] = results[j];
+                    results[j] = temp;
+                }
+            }
+        }
+        return results;
     }
     
     /**
@@ -188,58 +251,32 @@ public with sharing class AccountLinkerController {
     
     /**
      * Get aggregated linked Trace Sales for a specific account
+     * Uses year-chunked queries to avoid hitting the 50k row limit
      */
     @AuraEnabled
     public static List<AggregatedTraceSale> getAggregatedLinkedTraceSales(String accountId) {
         try {
-            // Use aggregate query
-            List<AggregateResult> aggregateResults = [
-                SELECT 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal,
-                    SUM(Revenue_Net__c) totalRevenue,
-                    COUNT(Id) recordCount
-                FROM Trace_Sale__c
-                WHERE Trace_Account_Mapping__r.Account__c = :accountId
-                GROUP BY 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c)
-                ORDER BY SUM(Revenue_Net__c) DESC
-                LIMIT 2000
-            ];
-            
-            List<AggregatedTraceSale> results = new List<AggregatedTraceSale>();
-            
-            for (AggregateResult ar : aggregateResults) {
-                AggregatedTraceSale agg = new AggregatedTraceSale();
-                
-                agg.distributor = ar.get('Distributor__c') != null ? String.valueOf(ar.get('Distributor__c')) : '';
-                agg.customer = ar.get('Customer__c') != null ? String.valueOf(ar.get('Customer__c')) : '';
-                agg.zipCode = ar.get('Zip_Code__c') != null ? String.valueOf(ar.get('Zip_Code__c')) : '';
-                agg.city = ar.get('City__c') != null ? String.valueOf(ar.get('City__c')) : '';
-                agg.state = ar.get('State__c') != null ? String.valueOf(ar.get('State__c')) : '';
-                agg.country = ar.get('Country__c') != null ? String.valueOf(ar.get('Country__c')) : '';
-                agg.timePeriod = ar.get('yearVal') != null ? String.valueOf(ar.get('yearVal')) : '';
-                agg.totalRevenue = ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0;
-                agg.recordCount = ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0;
-                
-                agg.groupKey = agg.distributor + '|' + agg.customer + '|' + agg.zipCode + '|' + agg.timePeriod;
-                agg.traceSaleIds = new List<String>();
-                agg.contractNames = '';
-                
-                results.add(agg);
+            Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
+
+            // Get current year and process data year by year for the last 15 years
+            Integer currentYear = Date.today().year();
+            Integer startYear = currentYear - 14; // Last 15 years including current year
+
+            // Process each year separately to avoid scanning too many rows
+            for (Integer year = startYear; year <= currentYear; year++) {
+                List<AggregateResult> yearResults = queryAggregatesByYear(year, 'linked', accountId);
+                mergeAggregateResults(yearResults, aggregationMap);
             }
-            
+
+            // Convert map to list and sort by revenue
+            List<AggregatedTraceSale> results = aggregationMap.values();
+            results = sortByRevenue(results);
+
+            // Return top 2000 to keep response size manageable
+            if (results.size() > 2000) {
+                return new List<AggregatedTraceSale>(results).subList(0, 2000);
+            }
+
             return results;
         } catch (Exception e) {
             throw new AuraHandledException('Error fetching linked trace sales: ' + e.getMessage());

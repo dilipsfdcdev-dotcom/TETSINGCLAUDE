@@ -23,7 +23,7 @@ export default class AccountLinker extends LightningElement {
     
     // Filter panel state
     @track isFilterPanelOpen = false;
-    
+
     // Filters
     @track filters = {
         distributor: '',
@@ -267,7 +267,7 @@ export default class AccountLinker extends LightningElement {
         return end > this.filteredRecords.length ? this.filteredRecords.length : end;
     }
     
-    // Load data methods - now using aggregated data
+    // Load data methods - now using aggregated data with year-chunked queries
     loadUnlinkedTraceSales() {
         this.isTableLoading = true;
         getAggregatedUnlinkedTraceSales()
@@ -283,7 +283,7 @@ export default class AccountLinker extends LightningElement {
                 this.isTableLoading = false;
             });
     }
-    
+
     loadLinkedTraceSales() {
         this.isTableLoading = true;
         getAggregatedLinkedTraceSales({ accountId: this.selectedAccount.id })
