@@ -63,7 +63,11 @@ public with sharing class AccountLinkerController {
 
             // Return top 2000 to keep response size manageable
             if (results.size() > 2000) {
-                return new List<AggregatedTraceSale>(results).subList(0, 2000);
+                List<AggregatedTraceSale> topResults = new List<AggregatedTraceSale>();
+                for (Integer i = 0; i < 2000; i++) {
+                    topResults.add(results[i]);
+                }
+                return topResults;
             }
 
             return results;
@@ -274,7 +278,11 @@ public with sharing class AccountLinkerController {
 
             // Return top 2000 to keep response size manageable
             if (results.size() > 2000) {
-                return new List<AggregatedTraceSale>(results).subList(0, 2000);
+                List<AggregatedTraceSale> topResults = new List<AggregatedTraceSale>();
+                for (Integer i = 0; i < 2000; i++) {
+                    topResults.add(results[i]);
+                }
+                return topResults;
             }
 
             return results;
