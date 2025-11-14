@@ -606,4 +606,101 @@ static void testCreateAndUnlinkTraceAccountMappings() {
     System.assertEquals(0, remaining, 'Mapping should be deleted after unlink');
 }
 
+    @IsTest
+    static void testStartAggregationBatchJob() {
+        Test.startTest();
+        String jobId = AccountLinkerController.startAggregationBatchJob('unlinked');
+        Test.stopTest();
+
+        // Verify job ID is returned
+        System.assertNotEquals(null, jobId, 'Should return batch job ID');
+
+        // Verify batch job exists
+        List<AsyncApexJob> jobs = [
+            SELECT Id, Status, ApexClass.Name
+            FROM AsyncApexJob
+            WHERE Id = :jobId
+        ];
+        System.assertEquals(1, jobs.size(), 'Batch job should exist');
+        System.assertEquals('TraceSaleAggregationBatch', jobs[0].ApexClass.Name, 'Should be correct batch class');
+    }
+
+    @IsTest
+    static void testCheckBatchJobStatus() {
+        // Start a batch job first
+        Test.startTest();
+        String jobId = AccountLinkerController.startAggregationBatchJob('unlinked');
+        Test.stopTest();
+
+        // Check status
+        Map<String, Object> status = AccountLinkerController.checkBatchJobStatus(jobId);
+
+        // Verify status map contains expected fields
+        System.assert(status.containsKey('status'), 'Should contain status field');
+        System.assert(status.containsKey('processed'), 'Should contain processed field');
+        System.assert(status.containsKey('total'), 'Should contain total field');
+        System.assert(status.containsKey('errors'), 'Should contain errors field');
+
+        // In test context, batch completes immediately
+        System.assertEquals('Completed', status.get('status'), 'Batch should complete in test context');
+    }
+
+    @IsTest
+    static void testCheckBatchJobStatusWithInvalidId() {
+        try {
+            AccountLinkerController.checkBatchJobStatus('000000000000000');
+            System.assert(false, 'Should throw exception for invalid job ID');
+        } catch (AuraHandledException e) {
+            System.assert(e.getMessage().contains('Error checking batch status'), 'Should have proper error message');
+        }
+    }
+
+    @IsTest
+    static void testGetAggregatedUnlinkedTraceSalesWithCache() {
+        // Create test data and manually store in cache
+        List<AccountLinkerController.AggregatedTraceSale> testData =
+            new List<AccountLinkerController.AggregatedTraceSale>();
+
+        AccountLinkerController.AggregatedTraceSale agg = new AccountLinkerController.AggregatedTraceSale();
+        agg.groupKey = 'test|test|12345|2024';
+        agg.distributor = 'test';
+        agg.customer = 'test';
+        agg.zipCode = '12345';
+        agg.totalRevenue = 1000;
+        agg.recordCount = 5;
+        testData.add(agg);
+
+        // Try to store in cache (may fail if partition doesn't exist in test, which is OK)
+        try {
+            Cache.Org.put('local.TraceSales.unlinked', JSON.serialize(testData), 300);
+        } catch (Exception e) {
+            System.debug('Cache not available in test: ' + e.getMessage());
+        }
+
+        Test.startTest();
+        Map<String, Object> response = AccountLinkerController.getAggregatedUnlinkedTraceSales();
+        Test.stopTest();
+
+        // Should return either cached data or direct query results
+        System.assertEquals('ready', response.get('status'), 'Status should be ready');
+        System.assertNotEquals(null, response.get('data'), 'Should have data');
+    }
+
+    @IsTest
+    static void testStartAggregationBatchJobLinkedMode() {
+        Test.startTest();
+        String jobId = AccountLinkerController.startAggregationBatchJob('linked');
+        Test.stopTest();
+
+        // Verify job was created for linked mode
+        System.assertNotEquals(null, jobId, 'Should return batch job ID for linked mode');
+
+        List<AsyncApexJob> jobs = [
+            SELECT Id, Status
+            FROM AsyncApexJob
+            WHERE Id = :jobId
+        ];
+        System.assertEquals(1, jobs.size(), 'Batch job should exist for linked mode');
+    }
+
 }
