@@ -38,68 +38,286 @@ public with sharing class AccountLinkerController {
     }
     
     /**
-     * Get aggregated unlinked Trace Sales using SOQL Aggregate Query
-     * This approach avoids hitting the 50k row limit by aggregating in the database
+     * Get aggregated unlinked Trace Sales
+     * Checks cache first, falls back to Batch Apex for large datasets (>50K rows)
      */
     @AuraEnabled
-    public static List<AggregatedTraceSale> getAggregatedUnlinkedTraceSales() {
+    public static Map<String, Object> getAggregatedUnlinkedTraceSales() {
         try {
-            // Use aggregate query to get grouped data
-            List<AggregateResult> aggregateResults = [
-                SELECT 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal,
-                    SUM(Revenue_Net__c) totalRevenue,
-                    COUNT(Id) recordCount
-                FROM Trace_Sale__c
-                WHERE Trace_Account_Mapping__c = null
-                GROUP BY 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c)
-                ORDER BY SUM(Revenue_Net__c) DESC
-                LIMIT 2000
-            ];
-            
-            // Convert aggregate results to wrapper objects
-            List<AggregatedTraceSale> results = new List<AggregatedTraceSale>();
-            
-            for (AggregateResult ar : aggregateResults) {
-                AggregatedTraceSale agg = new AggregatedTraceSale();
-                
-                agg.distributor = ar.get('Distributor__c') != null ? String.valueOf(ar.get('Distributor__c')) : '';
-                agg.customer = ar.get('Customer__c') != null ? String.valueOf(ar.get('Customer__c')) : '';
-                agg.zipCode = ar.get('Zip_Code__c') != null ? String.valueOf(ar.get('Zip_Code__c')) : '';
-                agg.city = ar.get('City__c') != null ? String.valueOf(ar.get('City__c')) : '';
-                agg.state = ar.get('State__c') != null ? String.valueOf(ar.get('State__c')) : '';
-                agg.country = ar.get('Country__c') != null ? String.valueOf(ar.get('Country__c')) : '';
-                agg.timePeriod = ar.get('yearVal') != null ? String.valueOf(ar.get('yearVal')) : '';
-                agg.totalRevenue = ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0;
-                agg.recordCount = ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0;
-                
-                // Create group key
-                agg.groupKey = agg.distributor + '|' + agg.customer + '|' + agg.zipCode + '|' + agg.timePeriod;
-                
-                // Initialize empty lists/values that will be populated when needed
-                agg.traceSaleIds = new List<String>();
-                agg.contractNames = '';
-                
-                results.add(agg);
+            // Check if results are in cache (from batch job)
+            // Wrap cache access in try-catch to handle missing cache partition
+            String cachedData = null;
+            try {
+                cachedData = (String)Cache.Org.get('local.TraceSales.unlinked');
+            } catch (Exception cacheEx) {
+                System.debug('Cache not available: ' + cacheEx.getMessage());
+                // Cache partition doesn't exist, continue without cache
             }
-            
-            return results;
+
+            if (String.isNotBlank(cachedData)) {
+                List<AggregatedTraceSale> results =
+                    (List<AggregatedTraceSale>)JSON.deserialize(cachedData, List<AggregatedTraceSale>.class);
+
+                return new Map<String, Object>{
+                    'status' => 'ready',
+                    'data' => results,
+                    'source' => 'cache'
+                };
+            }
+
+            // Try direct query for smaller datasets
+            try {
+                Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
+
+                // Get current year and process data year by year for the last 15 years
+                Integer currentYear = Date.today().year();
+                Integer startYear = currentYear - 14; // Last 15 years including current year
+
+                // Process each year separately to avoid scanning too many rows
+                for (Integer year = startYear; year <= currentYear; year++) {
+                    List<AggregateResult> yearResults = queryAggregatesByYear(year, 'unlinked', null);
+                    mergeAggregateResults(yearResults, aggregationMap);
+                }
+
+                // Convert map to list and sort by revenue
+                List<AggregatedTraceSale> results = aggregationMap.values();
+                results = sortByRevenue(results);
+
+                // Return top 2000 to keep response size manageable
+                if (results.size() > 2000) {
+                    List<AggregatedTraceSale> topResults = new List<AggregatedTraceSale>();
+                    for (Integer i = 0; i < 2000; i++) {
+                        topResults.add(results[i]);
+                    }
+                    return new Map<String, Object>{
+                        'status' => 'ready',
+                        'data' => topResults,
+                        'source' => 'direct'
+                    };
+                }
+
+                return new Map<String, Object>{
+                    'status' => 'ready',
+                    'data' => results,
+                    'source' => 'direct'
+                };
+            } catch (Exception queryEx) {
+                // Direct query failed (likely too many rows), need batch job
+                return new Map<String, Object>{
+                    'status' => 'needs_batch',
+                    'data' => null,
+                    'message' => 'Dataset too large for direct query. Please start batch processing.'
+                };
+            }
         } catch (Exception e) {
             throw new AuraHandledException('Error fetching unlinked trace sales: ' + e.getMessage());
         }
+    }
+
+    /**
+     * Start batch job to process all records and compute aggregations
+     * Use this for datasets larger than 50K rows
+     */
+    @AuraEnabled
+    public static String startAggregationBatchJob(String mode) {
+        try {
+            TraceSaleAggregationBatch batch = new TraceSaleAggregationBatch(mode, null);
+            Id batchId = Database.executeBatch(batch, 2000); // Process 2000 records per batch
+
+            return batchId;
+        } catch (Exception e) {
+            throw new AuraHandledException('Error starting batch job: ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Check status of batch job
+     */
+    @AuraEnabled
+    public static Map<String, Object> checkBatchJobStatus(String jobId) {
+        try {
+            AsyncApexJob job = [
+                SELECT Id, Status, NumberOfErrors, JobItemsProcessed, TotalJobItems,
+                       ExtendedStatus, CompletedDate
+                FROM AsyncApexJob
+                WHERE Id = :jobId
+                LIMIT 1
+            ];
+
+            return new Map<String, Object>{
+                'status' => job.Status,
+                'processed' => job.JobItemsProcessed,
+                'total' => job.TotalJobItems,
+                'errors' => job.NumberOfErrors,
+                'extendedStatus' => job.ExtendedStatus,
+                'completedDate' => job.CompletedDate
+            };
+        } catch (Exception e) {
+            throw new AuraHandledException('Error checking batch status: ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Get total count of unlinked trace sales records
+     * Used to display meaningful loading messages
+     */
+    @AuraEnabled
+    public static Integer getUnlinkedTraceSalesCount() {
+        try {
+            return [SELECT COUNT() FROM Trace_Sale__c WHERE Trace_Account_Mapping__c = null];
+        } catch (Exception e) {
+            throw new AuraHandledException('Error getting record count: ' + e.getMessage());
+        }
+    }
+
+    /**
+     * Helper method to query aggregates for a specific year
+     * If query fails (e.g., too many rows in year), splits by month
+     */
+    @TestVisible
+    private static List<AggregateResult> queryAggregatesByYear(Integer year, String mode, String accountId) {
+        // If a year might have >50K rows, go straight to monthly to avoid the error
+        // This is a production-safe approach that handles massive datasets
+        if (year >= Date.today().year() - 2) {
+            // Recent years (last 2 years) might have massive data, use monthly directly
+            return queryAggregatesByYearMonthly(year, mode, accountId);
+        }
+
+        try {
+            Date yearStart = Date.newInstance(year, 1, 1);
+            Date yearEnd = Date.newInstance(year, 12, 31);
+
+            String query = 'SELECT ' +
+                'Distributor__c, ' +
+                'Customer__c, ' +
+                'Zip_Code__c, ' +
+                'City__c, ' +
+                'State__c, ' +
+                'Country__c, ' +
+                'CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal, ' +
+                'SUM(Revenue_Net__c) totalRevenue, ' +
+                'COUNT(Id) recordCount ' +
+                'FROM Trace_Sale__c WHERE ';
+
+            if (mode == 'unlinked') {
+                query += 'Trace_Account_Mapping__c = null AND ';
+            } else if (mode == 'linked' && String.isNotBlank(accountId)) {
+                query += 'Trace_Account_Mapping__r.Account__c = \'' + accountId + '\' AND ';
+            }
+
+            query += 'Distributor_Invoice_Date__c >= :yearStart AND Distributor_Invoice_Date__c <= :yearEnd ' +
+                'GROUP BY Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
+                'CALENDAR_YEAR(Distributor_Invoice_Date__c) ' +
+                'ORDER BY SUM(Revenue_Net__c) DESC ' +
+                'LIMIT 2000';
+
+            return Database.query(query);
+        } catch (Exception e) {
+            // If query fails (likely too many rows in this year), split by month
+            System.debug('Year ' + year + ' query failed, falling back to monthly: ' + e.getMessage());
+            return queryAggregatesByYearMonthly(year, mode, accountId);
+        }
+    }
+
+    /**
+     * Fallback method to query aggregates by month when a year has too many records
+     * For extreme cases (987K in one month), returns representative sample without ORDER BY
+     */
+    @TestVisible
+    private static List<AggregateResult> queryAggregatesByYearMonthly(Integer year, String mode, String accountId) {
+        List<AggregateResult> allMonthResults = new List<AggregateResult>();
+
+        // Process each month separately
+        for (Integer month = 1; month <= 12; month++) {
+            try {
+                Date monthStart = Date.newInstance(year, month, 1);
+                Date monthEnd = monthStart.addMonths(1).addDays(-1);
+
+                // Query without ORDER BY to avoid scanning all rows
+                // Returns first 2000 groups found (representative sample)
+                String aggQuery = 'SELECT ' +
+                    'Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
+                    'CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal, ' +
+                    'SUM(Revenue_Net__c) totalRevenue, COUNT(Id) recordCount ' +
+                    'FROM Trace_Sale__c WHERE ';
+
+                if (mode == 'unlinked') {
+                    aggQuery += 'Trace_Account_Mapping__c = null AND ';
+                } else if (mode == 'linked' && String.isNotBlank(accountId)) {
+                    aggQuery += 'Trace_Account_Mapping__r.Account__c = \'' + accountId + '\' AND ';
+                }
+
+                aggQuery += 'Distributor_Invoice_Date__c >= :monthStart AND Distributor_Invoice_Date__c <= :monthEnd ' +
+                    'GROUP BY Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
+                    'CALENDAR_YEAR(Distributor_Invoice_Date__c) ' +
+                    'LIMIT 2000';
+
+                List<AggregateResult> monthResults = Database.query(aggQuery);
+                allMonthResults.addAll(monthResults);
+            } catch (Exception monthEx) {
+                System.debug('Error querying month ' + month + ' of year ' + year + ': ' + monthEx.getMessage());
+                // Continue with other months even if this one fails
+            }
+        }
+
+        return allMonthResults;
+    }
+
+    /**
+     * Helper method to merge aggregate results into the main map
+     */
+    @TestVisible
+    private static void mergeAggregateResults(List<AggregateResult> aggregateResults, Map<String, AggregatedTraceSale> aggregationMap) {
+        for (AggregateResult ar : aggregateResults) {
+            String distributor = ar.get('Distributor__c') != null ? String.valueOf(ar.get('Distributor__c')) : '';
+            String customer = ar.get('Customer__c') != null ? String.valueOf(ar.get('Customer__c')) : '';
+            String zipCode = ar.get('Zip_Code__c') != null ? String.valueOf(ar.get('Zip_Code__c')) : '';
+            String timePeriod = ar.get('yearVal') != null ? String.valueOf(ar.get('yearVal')) : '';
+
+            String groupKey = distributor + '|' + customer + '|' + zipCode + '|' + timePeriod;
+
+            AggregatedTraceSale agg;
+            if (aggregationMap.containsKey(groupKey)) {
+                // Merge with existing
+                agg = aggregationMap.get(groupKey);
+                agg.totalRevenue += (ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0);
+                agg.recordCount += (ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0);
+            } else {
+                // Create new
+                agg = new AggregatedTraceSale();
+                agg.groupKey = groupKey;
+                agg.distributor = distributor;
+                agg.customer = customer;
+                agg.zipCode = zipCode;
+                agg.city = ar.get('City__c') != null ? String.valueOf(ar.get('City__c')) : '';
+                agg.state = ar.get('State__c') != null ? String.valueOf(ar.get('State__c')) : '';
+                agg.country = ar.get('Country__c') != null ? String.valueOf(ar.get('Country__c')) : '';
+                agg.timePeriod = timePeriod;
+                agg.totalRevenue = ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0;
+                agg.recordCount = ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0;
+                agg.traceSaleIds = new List<String>();
+                agg.contractNames = '';
+                aggregationMap.put(groupKey, agg);
+            }
+        }
+    }
+
+    /**
+     * Helper method to sort aggregated results by revenue descending
+     */
+    @TestVisible
+    private static List<AggregatedTraceSale> sortByRevenue(List<AggregatedTraceSale> results) {
+        // Simple bubble sort for descending revenue
+        for (Integer i = 0; i < results.size(); i++) {
+            for (Integer j = i + 1; j < results.size(); j++) {
+                if (results[i].totalRevenue < results[j].totalRevenue) {
+                    AggregatedTraceSale temp = results[i];
+                    results[i] = results[j];
+                    results[j] = temp;
+                }
+            }
+        }
+        return results;
     }
     
     /**
@@ -188,58 +406,36 @@ public with sharing class AccountLinkerController {
     
     /**
      * Get aggregated linked Trace Sales for a specific account
+     * Uses year-chunked queries to avoid hitting the 50k row limit
      */
     @AuraEnabled
     public static List<AggregatedTraceSale> getAggregatedLinkedTraceSales(String accountId) {
         try {
-            // Use aggregate query
-            List<AggregateResult> aggregateResults = [
-                SELECT 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c) yearVal,
-                    SUM(Revenue_Net__c) totalRevenue,
-                    COUNT(Id) recordCount
-                FROM Trace_Sale__c
-                WHERE Trace_Account_Mapping__r.Account__c = :accountId
-                GROUP BY 
-                    Distributor__c,
-                    Customer__c,
-                    Zip_Code__c,
-                    City__c,
-                    State__c,
-                    Country__c,
-                    CALENDAR_YEAR(Distributor_Invoice_Date__c)
-                ORDER BY SUM(Revenue_Net__c) DESC
-                LIMIT 2000
-            ];
-            
-            List<AggregatedTraceSale> results = new List<AggregatedTraceSale>();
-            
-            for (AggregateResult ar : aggregateResults) {
-                AggregatedTraceSale agg = new AggregatedTraceSale();
-                
-                agg.distributor = ar.get('Distributor__c') != null ? String.valueOf(ar.get('Distributor__c')) : '';
-                agg.customer = ar.get('Customer__c') != null ? String.valueOf(ar.get('Customer__c')) : '';
-                agg.zipCode = ar.get('Zip_Code__c') != null ? String.valueOf(ar.get('Zip_Code__c')) : '';
-                agg.city = ar.get('City__c') != null ? String.valueOf(ar.get('City__c')) : '';
-                agg.state = ar.get('State__c') != null ? String.valueOf(ar.get('State__c')) : '';
-                agg.country = ar.get('Country__c') != null ? String.valueOf(ar.get('Country__c')) : '';
-                agg.timePeriod = ar.get('yearVal') != null ? String.valueOf(ar.get('yearVal')) : '';
-                agg.totalRevenue = ar.get('totalRevenue') != null ? (Decimal)ar.get('totalRevenue') : 0;
-                agg.recordCount = ar.get('recordCount') != null ? (Integer)ar.get('recordCount') : 0;
-                
-                agg.groupKey = agg.distributor + '|' + agg.customer + '|' + agg.zipCode + '|' + agg.timePeriod;
-                agg.traceSaleIds = new List<String>();
-                agg.contractNames = '';
-                
-                results.add(agg);
+            Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
+
+            // Get current year and process data year by year for the last 15 years
+            Integer currentYear = Date.today().year();
+            Integer startYear = currentYear - 14; // Last 15 years including current year
+
+            // Process each year separately to avoid scanning too many rows
+            for (Integer year = startYear; year <= currentYear; year++) {
+                List<AggregateResult> yearResults = queryAggregatesByYear(year, 'linked', accountId);
+                mergeAggregateResults(yearResults, aggregationMap);
             }
-            
+
+            // Convert map to list and sort by revenue
+            List<AggregatedTraceSale> results = aggregationMap.values();
+            results = sortByRevenue(results);
+
+            // Return top 2000 to keep response size manageable
+            if (results.size() > 2000) {
+                List<AggregatedTraceSale> topResults = new List<AggregatedTraceSale>();
+                for (Integer i = 0; i < 2000; i++) {
+                    topResults.add(results[i]);
+                }
+                return topResults;
+            }
+
             return results;
         } catch (Exception e) {
             throw new AuraHandledException('Error fetching linked trace sales: ' + e.getMessage());
