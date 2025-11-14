@@ -121,9 +121,13 @@ private class AccountLinkerControllerTest {
     @IsTest
     static void testGetAggregatedUnlinkedTraceSales() {
         Test.startTest();
-        List<AccountLinkerController.AggregatedTraceSale> aggs =
-            AccountLinkerController.getAggregatedUnlinkedTraceSales();
+        Map<String, Object> response = AccountLinkerController.getAggregatedUnlinkedTraceSales();
         Test.stopTest();
+
+        // Extract data from response
+        System.assertEquals('ready', response.get('status'), 'Status should be ready');
+        List<AccountLinkerController.AggregatedTraceSale> aggs =
+            (List<AccountLinkerController.AggregatedTraceSale>)response.get('data');
 
         // We expect three groups: 2023, 2024, and 2025 (year-chunked queries)
         System.assertEquals(3, aggs.size(), 'Unlinked groups should be split by year across multiple years');
@@ -296,9 +300,13 @@ private class AccountLinkerControllerTest {
         insert bulkSales;
 
         Test.startTest();
-        List<AccountLinkerController.AggregatedTraceSale> aggs =
-            AccountLinkerController.getAggregatedUnlinkedTraceSales();
+        Map<String, Object> response = AccountLinkerController.getAggregatedUnlinkedTraceSales();
         Test.stopTest();
+
+        // Extract data from response
+        System.assertEquals('ready', response.get('status'), 'Status should be ready');
+        List<AccountLinkerController.AggregatedTraceSale> aggs =
+            (List<AccountLinkerController.AggregatedTraceSale>)response.get('data');
 
         // Should aggregate by distributor/customer/zip/year
         System.assert(aggs.size() > 0, 'Should return aggregated results');
@@ -472,6 +480,16 @@ private class AccountLinkerControllerTest {
 
         // Should return results for linked records
         System.assert(results != null, 'Should return results for linked mode');
+    }
+
+    @IsTest
+    static void testGetUnlinkedTraceSalesCount() {
+        Test.startTest();
+        Integer count = AccountLinkerController.getUnlinkedTraceSalesCount();
+        Test.stopTest();
+
+        // We have 4 unlinked trace sales from setup
+        System.assert(count >= 4, 'Should have at least 4 unlinked trace sales from setup');
     }
 
     @IsTest
