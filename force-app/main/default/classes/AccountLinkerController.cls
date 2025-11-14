@@ -45,7 +45,14 @@ public with sharing class AccountLinkerController {
     public static Map<String, Object> getAggregatedUnlinkedTraceSales() {
         try {
             // Check if results are in cache (from batch job)
-            String cachedData = (String)Cache.Org.get('local.TraceSales.aggregated_unlinked');
+            // Wrap cache access in try-catch to handle missing cache partition
+            String cachedData = null;
+            try {
+                cachedData = (String)Cache.Org.get('local.TraceSales.aggregated_unlinked');
+            } catch (Exception cacheEx) {
+                System.debug('Cache not available: ' + cacheEx.getMessage());
+                // Cache partition doesn't exist, continue without cache
+            }
 
             if (String.isNotBlank(cachedData)) {
                 List<AggregatedTraceSale> results =
