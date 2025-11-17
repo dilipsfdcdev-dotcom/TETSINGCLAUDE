@@ -304,20 +304,59 @@ public with sharing class AccountLinkerController {
 
     /**
      * Helper method to sort aggregated results by revenue descending
+     * Uses merge sort (O(n log n)) for better performance with large datasets
      */
     @TestVisible
     private static List<AggregatedTraceSale> sortByRevenue(List<AggregatedTraceSale> results) {
-        // Simple bubble sort for descending revenue
-        for (Integer i = 0; i < results.size(); i++) {
-            for (Integer j = i + 1; j < results.size(); j++) {
-                if (results[i].totalRevenue < results[j].totalRevenue) {
-                    AggregatedTraceSale temp = results[i];
-                    results[i] = results[j];
-                    results[j] = temp;
-                }
+        if (results == null || results.size() <= 1) {
+            return results;
+        }
+        return mergeSort(results, 0, results.size() - 1);
+    }
+
+    /**
+     * Merge sort implementation for efficient sorting
+     */
+    private static List<AggregatedTraceSale> mergeSort(List<AggregatedTraceSale> arr, Integer left, Integer right) {
+        if (left >= right) {
+            return new List<AggregatedTraceSale>{ arr[left] };
+        }
+
+        Integer mid = left + (right - left) / 2;
+        List<AggregatedTraceSale> leftSorted = mergeSort(arr, left, mid);
+        List<AggregatedTraceSale> rightSorted = mergeSort(arr, mid + 1, right);
+
+        return merge(leftSorted, rightSorted);
+    }
+
+    /**
+     * Merge two sorted lists in descending order by revenue
+     */
+    private static List<AggregatedTraceSale> merge(List<AggregatedTraceSale> left, List<AggregatedTraceSale> right) {
+        List<AggregatedTraceSale> result = new List<AggregatedTraceSale>();
+        Integer i = 0, j = 0;
+
+        while (i < left.size() && j < right.size()) {
+            if (left[i].totalRevenue >= right[j].totalRevenue) {
+                result.add(left[i]);
+                i++;
+            } else {
+                result.add(right[j]);
+                j++;
             }
         }
-        return results;
+
+        while (i < left.size()) {
+            result.add(left[i]);
+            i++;
+        }
+
+        while (j < right.size()) {
+            result.add(right[j]);
+            j++;
+        }
+
+        return result;
     }
     
     /**

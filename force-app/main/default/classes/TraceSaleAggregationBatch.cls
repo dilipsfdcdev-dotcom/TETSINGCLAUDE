@@ -123,18 +123,60 @@ public class TraceSaleAggregationBatch implements Database.Batchable<sObject>, D
         }
     }
 
+    /**
+     * Sort by revenue using merge sort (O(n log n)) for better performance
+     */
     private List<AccountLinkerController.AggregatedTraceSale> sortByRevenue(
         List<AccountLinkerController.AggregatedTraceSale> results
     ) {
-        for (Integer i = 0; i < results.size(); i++) {
-            for (Integer j = i + 1; j < results.size(); j++) {
-                if (results[i].totalRevenue < results[j].totalRevenue) {
-                    AccountLinkerController.AggregatedTraceSale temp = results[i];
-                    results[i] = results[j];
-                    results[j] = temp;
-                }
+        if (results == null || results.size() <= 1) {
+            return results;
+        }
+        return mergeSort(results, 0, results.size() - 1);
+    }
+
+    private List<AccountLinkerController.AggregatedTraceSale> mergeSort(
+        List<AccountLinkerController.AggregatedTraceSale> arr, Integer left, Integer right
+    ) {
+        if (left >= right) {
+            return new List<AccountLinkerController.AggregatedTraceSale>{ arr[left] };
+        }
+
+        Integer mid = left + (right - left) / 2;
+        List<AccountLinkerController.AggregatedTraceSale> leftSorted = mergeSort(arr, left, mid);
+        List<AccountLinkerController.AggregatedTraceSale> rightSorted = mergeSort(arr, mid + 1, right);
+
+        return merge(leftSorted, rightSorted);
+    }
+
+    private List<AccountLinkerController.AggregatedTraceSale> merge(
+        List<AccountLinkerController.AggregatedTraceSale> left,
+        List<AccountLinkerController.AggregatedTraceSale> right
+    ) {
+        List<AccountLinkerController.AggregatedTraceSale> result =
+            new List<AccountLinkerController.AggregatedTraceSale>();
+        Integer i = 0, j = 0;
+
+        while (i < left.size() && j < right.size()) {
+            if (left[i].totalRevenue >= right[j].totalRevenue) {
+                result.add(left[i]);
+                i++;
+            } else {
+                result.add(right[j]);
+                j++;
             }
         }
-        return results;
+
+        while (i < left.size()) {
+            result.add(left[i]);
+            i++;
+        }
+
+        while (j < right.size()) {
+            result.add(right[j]);
+            j++;
+        }
+
+        return result;
     }
 }
