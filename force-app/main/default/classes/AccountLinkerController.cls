@@ -339,13 +339,13 @@ public with sharing class AccountLinkerController {
         List<AggregatedTraceSale> leftSorted = mergeSort(arr, left, mid);
         List<AggregatedTraceSale> rightSorted = mergeSort(arr, mid + 1, right);
 
-        return merge(leftSorted, rightSorted);
+        return mergeLists(leftSorted, rightSorted);
     }
 
     /**
      * Merge two sorted lists in descending order by revenue
      */
-    private static List<AggregatedTraceSale> merge(List<AggregatedTraceSale> left, List<AggregatedTraceSale> right) {
+    private static List<AggregatedTraceSale> mergeLists(List<AggregatedTraceSale> left, List<AggregatedTraceSale> right) {
         List<AggregatedTraceSale> result = new List<AggregatedTraceSale>();
         Integer i = 0, j = 0;
 

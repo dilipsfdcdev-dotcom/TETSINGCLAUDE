@@ -146,10 +146,10 @@ public class TraceSaleAggregationBatch implements Database.Batchable<sObject>, D
         List<AccountLinkerController.AggregatedTraceSale> leftSorted = mergeSort(arr, left, mid);
         List<AccountLinkerController.AggregatedTraceSale> rightSorted = mergeSort(arr, mid + 1, right);
 
-        return merge(leftSorted, rightSorted);
+        return mergeLists(leftSorted, rightSorted);
     }
 
-    private List<AccountLinkerController.AggregatedTraceSale> merge(
+    private List<AccountLinkerController.AggregatedTraceSale> mergeLists(
         List<AccountLinkerController.AggregatedTraceSale> left,
         List<AccountLinkerController.AggregatedTraceSale> right
     ) {
