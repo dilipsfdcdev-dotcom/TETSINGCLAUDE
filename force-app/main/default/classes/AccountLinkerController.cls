@@ -65,7 +65,20 @@ public with sharing class AccountLinkerController {
                 };
             }
 
-            // Try direct query for smaller datasets
+            // Check record count before attempting direct query
+            Integer recordCount = [SELECT COUNT() FROM Trace_Sale__c WHERE Trace_Account_Mapping__c = null];
+
+            // If more than 50K records, require batch processing
+            if (recordCount > 50000) {
+                return new Map<String, Object>{
+                    'status' => 'needs_batch',
+                    'data' => null,
+                    'recordCount' => recordCount,
+                    'message' => 'Dataset has ' + recordCount + ' records (>50K limit). Please start batch processing.'
+                };
+            }
+
+            // Try direct query for smaller datasets (<= 50K)
             try {
                 Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
 
@@ -450,6 +463,20 @@ public with sharing class AccountLinkerController {
     @AuraEnabled
     public static List<AggregatedTraceSale> getAggregatedLinkedTraceSales(String accountId) {
         try {
+            // Check record count before attempting direct query
+            Integer recordCount = [
+                SELECT COUNT()
+                FROM Trace_Sale__c
+                WHERE Trace_Account_Mapping__r.Account__c = :accountId
+            ];
+
+            // If more than 50K records for this account, use batch processing
+            if (recordCount > 50000) {
+                throw new AuraHandledException(
+                    'Account has ' + recordCount + ' linked records (>50K limit). Please use batch processing.'
+                );
+            }
+
             Map<String, AggregatedTraceSale> aggregationMap = new Map<String, AggregatedTraceSale>();
 
             // Get current year and process data year by year for the last 15 years
