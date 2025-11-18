@@ -3,9 +3,9 @@
     <fullName>Aggregation_Key__c</fullName>
     <description>Grouping key for aggregation: Distributor|Customer|ZipCode|Year. Used for efficient GROUP BY queries and identifying related trace sales.</description>
     <externalId>false</externalId>
-    <formula>TEXT(Distributor__c) &amp; &quot;|&quot; &amp;
-TEXT(Customer__c) &amp; &quot;|&quot; &amp;
-TEXT(Zip_Code__c) &amp; &quot;|&quot; &amp;
+    <formula>Distributor__c &amp; &quot;|&quot; &amp;
+Customer__c &amp; &quot;|&quot; &amp;
+Zip_Code__c &amp; &quot;|&quot; &amp;
 TEXT(YEAR(Distributor_Invoice_Date__c))</formula>
     <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
     <label>Aggregation Key</label>
