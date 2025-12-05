@@ -28,7 +28,7 @@ public class TraceSaleAggregationBatch implements Database.Batchable<sObject>, D
 
     public Database.QueryLocator start(Database.BatchableContext bc) {
         String query = 'SELECT Id, Distributor__c, Customer__c, Zip_Code__c, City__c, State__c, Country__c, ' +
-                       'Distributor_Invoice_Date__c, Revenue_Net__c ' +
+                       'Distributor_Invoice_Date__c, Revenue_Net__c, Aggregation_Key__c ' +
                        'FROM Trace_Sale__c ';
 
         if (mode == 'unlinked') {
@@ -44,24 +44,23 @@ public class TraceSaleAggregationBatch implements Database.Batchable<sObject>, D
 
     public void execute(Database.BatchableContext bc, List<Trace_Sale__c> scope) {
         for (Trace_Sale__c ts : scope) {
-            // Extract year from date
-            String year = '';
-            if (ts.Distributor_Invoice_Date__c != null) {
-                year = String.valueOf(ts.Distributor_Invoice_Date__c.year());
-            }
-
-            // Create grouping key
-            String groupKey =
-                String.valueOf(ts.Distributor__c) + '|' +
-                String.valueOf(ts.Customer__c) + '|' +
-                String.valueOf(ts.Zip_Code__c) + '|' +
-                year;
+            // Use the formula field for grouping key
+            String groupKey = ts.Aggregation_Key__c != null ? ts.Aggregation_Key__c : '';
 
             // Get or create aggregation data
             AggregationData aggData;
             if (aggregationMap.containsKey(groupKey)) {
                 aggData = aggregationMap.get(groupKey);
             } else {
+                // Extract year from aggregation key (last segment after final |)
+                String year = '';
+                if (String.isNotBlank(groupKey) && groupKey.contains('|')) {
+                    List<String> parts = groupKey.split('\\|');
+                    if (parts.size() == 4) {
+                        year = parts[3];
+                    }
+                }
+
                 aggData = new AggregationData();
                 aggData.distributor = ts.Distributor__c;
                 aggData.customer = ts.Customer__c;
@@ -123,18 +122,60 @@ public class TraceSaleAggregationBatch implements Database.Batchable<sObject>, D
         }
     }
 
+    /**
+     * Sort by revenue using merge sort (O(n log n)) for better performance
+     */
     private List<AccountLinkerController.AggregatedTraceSale> sortByRevenue(
         List<AccountLinkerController.AggregatedTraceSale> results
     ) {
-        for (Integer i = 0; i < results.size(); i++) {
-            for (Integer j = i + 1; j < results.size(); j++) {
-                if (results[i].totalRevenue < results[j].totalRevenue) {
-                    AccountLinkerController.AggregatedTraceSale temp = results[i];
-                    results[i] = results[j];
-                    results[j] = temp;
-                }
+        if (results == null || results.size() <= 1) {
+            return results;
+        }
+        return mergeSort(results, 0, results.size() - 1);
+    }
+
+    private List<AccountLinkerController.AggregatedTraceSale> mergeSort(
+        List<AccountLinkerController.AggregatedTraceSale> arr, Integer left, Integer right
+    ) {
+        if (left >= right) {
+            return new List<AccountLinkerController.AggregatedTraceSale>{ arr[left] };
+        }
+
+        Integer mid = left + (right - left) / 2;
+        List<AccountLinkerController.AggregatedTraceSale> leftSorted = mergeSort(arr, left, mid);
+        List<AccountLinkerController.AggregatedTraceSale> rightSorted = mergeSort(arr, mid + 1, right);
+
+        return mergeLists(leftSorted, rightSorted);
+    }
+
+    private List<AccountLinkerController.AggregatedTraceSale> mergeLists(
+        List<AccountLinkerController.AggregatedTraceSale> left,
+        List<AccountLinkerController.AggregatedTraceSale> right
+    ) {
+        List<AccountLinkerController.AggregatedTraceSale> result =
+            new List<AccountLinkerController.AggregatedTraceSale>();
+        Integer i = 0, j = 0;
+
+        while (i < left.size() && j < right.size()) {
+            if (left[i].totalRevenue >= right[j].totalRevenue) {
+                result.add(left[i]);
+                i++;
+            } else {
+                result.add(right[j]);
+                j++;
             }
         }
-        return results;
+
+        while (i < left.size()) {
+            result.add(left[i]);
+            i++;
+        }
+
+        while (j < right.size()) {
+            result.add(right[j]);
+            j++;
+        }
+
+        return result;
     }
 }
